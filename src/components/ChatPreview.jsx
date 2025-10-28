@@ -51,7 +51,7 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
       if (saved) return JSON.parse(saved);
     } catch {}
     return [
-      { role: "user", content: "Summarize the document I just uploaded and list key takeaways." },
+      { role: "assistant", content: "Hi! I\'m Cerebro. Ask me anything or upload a .txt/.pdf to ground my answers." },
     ];
   });
   const [inputText, setInputText] = useState("");
@@ -82,6 +82,36 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
     };
   }, []);
 
+  const appendAssistantText = (text) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      const lastIdx = updated.length - 1;
+      if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
+        updated[lastIdx] = { ...updated[lastIdx], content: (updated[lastIdx].content || "") + text };
+      } else {
+        updated.push({ role: "assistant", content: text });
+      }
+      return updated;
+    });
+  };
+
+  const replaceLastAssistant = (text) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      let idx = updated.length - 1;
+      if (idx < 0) {
+        updated.push({ role: "assistant", content: text });
+        return updated;
+      }
+      if (updated[idx].role !== "assistant") {
+        updated.push({ role: "assistant", content: text });
+      } else {
+        updated[idx] = { ...updated[idx], content: text };
+      }
+      return updated;
+    });
+  };
+
   const handleSend = () => {
     const text = inputText.trim();
     if (!text || streaming) return;
@@ -92,10 +122,22 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
     setStreaming(true);
 
     const wsUrl = `${wsBase}/ws/chat`;
+    let opened = false;
+    let gotAnyPartial = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    // Safety timeout: if nothing happens within 4s, show a helpful message
+    const safetyTimer = setTimeout(() => {
+      if (!gotAnyPartial) {
+        replaceLastAssistant("I couldn\'t reach the assistant service yet. Please check your backend URL and try again.");
+        try { ws.close(); } catch {}
+        setStreaming(false);
+      }
+    }, 4000);
+
     ws.onopen = () => {
+      opened = true;
       const payload = { user_id: userId, message: text, stream: true, temperature, model, persona };
       ws.send(JSON.stringify(payload));
     };
@@ -104,14 +146,8 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
       try {
         const payload = JSON.parse(event.data);
         if (payload.type === "partial") {
-          setMessages((prev) => {
-            const updated = [...prev];
-            const lastIdx = updated.length - 1;
-            if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
-              updated[lastIdx] = { ...updated[lastIdx], content: (updated[lastIdx].content || "") + (payload.text || "") };
-            }
-            return updated;
-          });
+          gotAnyPartial = true;
+          appendAssistantText(payload.text || "");
         } else if (payload.type === "done") {
           ws.close();
         }
@@ -121,10 +157,12 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
     };
 
     ws.onerror = () => {
+      replaceLastAssistant("There was a connection error. Make sure your backend WebSocket is running at " + wsUrl + ".");
       setStreaming(false);
     };
 
     ws.onclose = () => {
+      clearTimeout(safetyTimer);
       setStreaming(false);
     };
   };

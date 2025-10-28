@@ -51,11 +51,12 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
       if (saved) return JSON.parse(saved);
     } catch {}
     return [
-      { role: "assistant", content: "Hi! I\'m Cerebro. Ask me anything or upload a .txt/.pdf to ground my answers." },
+      { role: "assistant", content: "Hi! I'm Cerebro. Ask me anything or upload a .txt/.pdf to ground my answers." },
     ];
   });
   const [inputText, setInputText] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const wsRef = useRef(null);
   const { restBase, wsBase } = useBackendUrls();
   const scrollRef = useRef(null);
@@ -77,7 +78,7 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
   useEffect(() => {
     return () => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
+        try { wsRef.current.close(); } catch {}
       }
     };
   }, []);
@@ -130,7 +131,8 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
     // Safety timeout: if nothing happens within 4s, show a helpful message
     const safetyTimer = setTimeout(() => {
       if (!gotAnyPartial) {
-        replaceLastAssistant("I couldn\'t reach the assistant service yet. Please check your backend URL and try again.");
+        console.warn("WS safety timeout - no partials received within 4s");
+        replaceLastAssistant("I couldn't reach the assistant service yet. Please check your backend URL and try again.");
         try { ws.close(); } catch {}
         setStreaming(false);
       }
@@ -138,11 +140,14 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
 
     ws.onopen = () => {
       opened = true;
+      console.log("WS open:", wsUrl);
       const payload = { user_id: userId, message: text, stream: true, temperature, model, persona };
+      console.log("WS send payload:", payload);
       ws.send(JSON.stringify(payload));
     };
 
     ws.onmessage = (event) => {
+      console.log("WS message:", event.data);
       try {
         const payload = JSON.parse(event.data);
         if (payload.type === "partial") {
@@ -150,19 +155,28 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
           appendAssistantText(payload.text || "");
         } else if (payload.type === "done") {
           ws.close();
+        } else {
+          // Unknown payloads are logged only
+          console.debug("WS unknown payload type", payload);
         }
       } catch (e) {
         console.error("Invalid WS message", e);
       }
     };
 
-    ws.onerror = () => {
+    ws.onerror = (err) => {
+      console.error("WS error:", err);
       replaceLastAssistant("There was a connection error. Make sure your backend WebSocket is running at " + wsUrl + ".");
       setStreaming(false);
     };
 
     ws.onclose = () => {
       clearTimeout(safetyTimer);
+      console.log("WS close. Opened:", opened, "Got partial:", gotAnyPartial);
+      // If the connection closed without any content appended, provide UI feedback
+      if (!gotAnyPartial) {
+        replaceLastAssistant("No response was received from the assistant. Please verify the server is reachable and try again.");
+      }
       setStreaming(false);
     };
   };
@@ -233,6 +247,19 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
         <div className="mt-10 grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Chat panel */}
           <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4 sm:p-6 flex flex-col min-h-[420px]">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-xs text-white/50">Using <span className="font-medium text-white/80">{model}</span> · Temp <span className="font-medium text-white/80">{temperature.toFixed(1)}</span> · Persona {persona}</div>
+              <button onClick={() => setShowDebug((v) => !v)} className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15 text-white/70">
+                {showDebug ? "Hide debug" : "Show debug"}
+              </button>
+            </div>
+            {showDebug && (
+              <div className="mb-3 text-[10px] leading-5 text-white/60 break-all">
+                REST: {restBase}
+                <br />
+                WS: {`${wsBase}/ws/chat`}
+              </div>
+            )}
             <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
               {messages.map((m, idx) => (
                 m.role === "user" ? (
@@ -263,9 +290,6 @@ export default function ChatPreview({ settings = { userId: "pavitra", temperatur
               >
                 {streaming ? "Streaming…" : "Send"}
               </button>
-            </div>
-            <div className="mt-2 text-xs text-white/50">
-              Using <span className="font-medium text-white/80">{model}</span> · Temp <span className="font-medium text-white/80">{temperature.toFixed(1)}</span> · Persona {persona}
             </div>
           </div>
 

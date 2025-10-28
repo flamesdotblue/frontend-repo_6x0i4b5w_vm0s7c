@@ -32,7 +32,6 @@ function useBackendUrls() {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       return url.toString().replace(/\/$/, "");
     } catch {
-      // If parsing fails, default to current origin
       const origin = window.location.origin;
       const proto = origin.startsWith("https") ? "wss" : "ws";
       return origin.replace(/^https?/, proto);
@@ -41,14 +40,39 @@ function useBackendUrls() {
   return { restBase, wsBase };
 }
 
-export default function ChatPreview() {
-  const [messages, setMessages] = useState([
-    { role: "user", content: "Summarize the document I just uploaded and list key takeaways." },
-  ]);
+const CHAT_KEY_PREFIX = "cerebro.chat.";
+
+export default function ChatPreview({ settings = { userId: "pavitra", temperature: 0.7, model: "gpt-4o-mini", persona: "balanced" } }) {
+  const { userId, temperature, model, persona } = settings;
+  const storageKey = `${CHAT_KEY_PREFIX}${userId}`;
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      { role: "user", content: "Summarize the document I just uploaded and list key takeaways." },
+    ];
+  });
   const [inputText, setInputText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const wsRef = useRef(null);
   const { restBase, wsBase } = useBackendUrls();
+  const scrollRef = useRef(null);
+
+  // Persist chat per user
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(messages));
+    } catch {}
+  }, [messages, storageKey]);
+
+  // Auto scroll on message updates
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, streaming]);
 
   useEffect(() => {
     return () => {
@@ -72,7 +96,7 @@ export default function ChatPreview() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      const payload = { user_id: "pavitra", message: text, stream: true };
+      const payload = { user_id: userId, message: text, stream: true, temperature, model, persona };
       ws.send(JSON.stringify(payload));
     };
 
@@ -82,7 +106,6 @@ export default function ChatPreview() {
         if (payload.type === "partial") {
           setMessages((prev) => {
             const updated = [...prev];
-            // Stream into the last assistant message
             const lastIdx = updated.length - 1;
             if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
               updated[lastIdx] = { ...updated[lastIdx], content: (updated[lastIdx].content || "") + (payload.text || "") };
@@ -113,29 +136,52 @@ export default function ChatPreview() {
     }
   };
 
-  const handleIngest = async (file) => {
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".txt")) {
-      alert("Please upload a .txt file for now.");
-      return;
-    }
+  const ingestTxt = async (file) => {
     const text = await file.text();
-    const body = {
-      user_id: "pavitra",
-      doc_name: file.name,
-      text,
-    };
+    const body = { user_id: userId, doc_name: file.name, text };
     const res = await fetch(`${restBase}/ingest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      const msg = await res.text();
-      alert(`Ingestion failed: ${msg}`);
-      return;
+    return res;
+  };
+
+  const ingestPdf = async (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("user_id", userId);
+    form.append("doc_name", file.name);
+    const res = await fetch(`${restBase}/ingest`, {
+      method: "POST",
+      body: form,
+    });
+    return res;
+  };
+
+  const handleIngest = async (file) => {
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    try {
+      let res;
+      if (name.endsWith(".txt")) {
+        res = await ingestTxt(file);
+      } else if (name.endsWith(".pdf")) {
+        res = await ingestPdf(file);
+      } else {
+        alert("Please upload a .txt or .pdf file.");
+        return;
+      }
+
+      if (!res.ok) {
+        const msg = await res.text();
+        alert(`Ingestion failed: ${msg}`);
+        return;
+      }
+      alert("Document ingested successfully.");
+    } catch (e) {
+      alert(`Ingestion error: ${e?.message || e}`);
     }
-    alert("Document ingested successfully.");
   };
 
   return (
@@ -143,13 +189,13 @@ export default function ChatPreview() {
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <div className="max-w-3xl">
           <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">Chat</h2>
-          <p className="mt-3 text-white/70">Type a message and watch live streaming responses over WebSockets. You can also ingest a .txt file to power RAG.</p>
+          <p className="mt-3 text-white/70">Type a message and watch live streaming responses over WebSockets. You can also ingest .txt or .pdf files to power RAG.</p>
         </div>
 
         <div className="mt-10 grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Chat panel */}
           <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4 sm:p-6 flex flex-col min-h-[420px]">
-            <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+            <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto pr-1">
               {messages.map((m, idx) => (
                 m.role === "user" ? (
                   <UserBubble key={idx}>{m.content}</UserBubble>
@@ -180,23 +226,26 @@ export default function ChatPreview() {
                 {streaming ? "Streaming…" : "Send"}
               </button>
             </div>
+            <div className="mt-2 text-xs text-white/50">
+              Using <span className="font-medium text-white/80">{model}</span> · Temp <span className="font-medium text-white/80">{temperature.toFixed(1)}</span> · Persona {persona}
+            </div>
           </div>
 
           {/* Ingestion panel */}
           <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4 sm:p-6">
             <h3 className="text-lg font-medium text-white">Document Ingestion</h3>
-            <p className="mt-2 text-sm text-white/70">Upload a .txt file to add it to your personal knowledge base.</p>
+            <p className="mt-2 text-sm text-white/70">Upload a .txt or .pdf file to add it to your personal knowledge base.</p>
             <div className="mt-4">
               <label className="block">
                 <input
                   type="file"
-                  accept=".txt"
+                  accept=".txt,.pdf"
                   onChange={(e) => handleIngest(e.target.files?.[0] || null)}
                   className="block w-full text-sm text-white/80 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-white file:text-black hover:file:bg-white/90"
                 />
               </label>
             </div>
-            <p className="mt-3 text-xs text-white/50">PDF support will be added soon.</p>
+            <p className="mt-3 text-xs text-white/50">Text files are sent as JSON; PDFs are sent as form-data for server-side parsing.</p>
           </div>
         </div>
       </div>

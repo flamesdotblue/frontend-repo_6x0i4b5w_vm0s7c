@@ -44,7 +44,7 @@ export default function ChatPreview() {
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <div className="max-w-3xl">
           <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight text-white">Chat preview</h2>
-          <p className="mt-3 text-white/70">A taste of the live streaming experience youll get with WebSockets.</p>
+          <p className="mt-3 text-white/70">A taste of the live streaming experience you’ll get with WebSockets.</p>
         </div>
 
         <div className="mt-10 rounded-2xl border border-white/10 bg-zinc-900/40 p-4 sm:p-6">
